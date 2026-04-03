@@ -1,0 +1,43 @@
+FROM debian:bookworm-slim AS fetcher
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends pandoc && \
+    apt-get download docker-doc && \
+    dpkg -x docker-doc_*.deb /tmp/pkg && \
+    mkdir -p /docs && \
+    docroot=/tmp/pkg/usr/share/doc/docker-doc && \
+    find "$docroot" -name "*.md.gz" | while read f; do gunzip "$f"; done && \
+    find "$docroot" -name "*.md" | while read mdfile; do \
+        rel="${mdfile#$docroot/}"; \
+        outfile="/docs/${rel%.md}.html"; \
+        mkdir -p "$(dirname "$outfile")"; \
+        pandoc --standalone --metadata title="$(basename ${rel%.md})" \
+               -f markdown -t html5 "$mdfile" -o "$outfile"; \
+    done && \
+    find "$docroot" -not -name "*.md" -not -name "*.md.gz" -type f | while read f; do \
+        rel="${f#$docroot/}"; \
+        mkdir -p "/docs/$(dirname "$rel")"; \
+        cp "$f" "/docs/$rel"; \
+    done && \
+    printf '<html><head><meta charset="utf-8"><title>Docker Documentation</title></head><body>\n<h1>Docker Documentation</h1><ul>\n' \
+        > /docs/index.html && \
+    find /docs -name "*.html" ! -name "index.html" | sort | while read f; do \
+        rel="${f#/docs/}"; \
+        printf '<li><a href="%s">%s</a></li>\n' "$rel" "${rel%.html}"; \
+    done >> /docs/index.html && \
+    printf '</ul></body></html>\n' >> /docs/index.html
+
+FROM nginx:alpine
+
+COPY --from=fetcher /docs/ /usr/share/nginx/html/
+
+# Write a complete nginx.conf from scratch:
+#   - pid in /tmp (always writable, already a tmpfs mount)
+#   - no "user" directive (incompatible with rootless)
+#   - all temp paths in /tmp
+#   - listens on unprivileged port 8080
+RUN printf 'pid /tmp/nginx.pid;\n\nevents {\n    worker_connections 256;\n}\n\nhttp {\n    include      /etc/nginx/mime.types;\n    default_type application/octet-stream;\n\n    client_body_temp_path /tmp/client_temp;\n    proxy_temp_path       /tmp/proxy_temp;\n    fastcgi_temp_path     /tmp/fastcgi_temp;\n    uwsgi_temp_path       /tmp/uwsgi_temp;\n    scgi_temp_path        /tmp/scgi_temp;\n\n    server {\n        listen 8080;\n        root   /usr/share/nginx/html;\n        index  index.html;\n        location / { try_files $uri $uri/ =404; }\n        add_header X-Content-Type-Options nosniff;\n    }\n}\n' > /etc/nginx/nginx.conf
+
+USER 101
+EXPOSE 8080

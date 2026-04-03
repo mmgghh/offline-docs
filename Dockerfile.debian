@@ -1,0 +1,25 @@
+FROM debian:bookworm-slim AS fetcher
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && \
+    apt-get download debian-reference-common debian-reference-en && \
+    dpkg -x debian-reference-common_*.deb /tmp/pkg && \
+    dpkg -x debian-reference-en_*.deb /tmp/pkg && \
+    cp -r /tmp/pkg/usr/share/debian-reference /docs && \
+    printf '<html><head><meta http-equiv="refresh" content="0; url=index.en.html"></head>\n\
+<body><a href="index.en.html">Debian Reference (English)</a></body></html>\n' \
+        > /docs/index.html
+
+FROM nginx:alpine
+
+COPY --from=fetcher /docs/ /usr/share/nginx/html/
+
+# Write a complete nginx.conf from scratch:
+#   - pid in /tmp (always writable, already a tmpfs mount)
+#   - no "user" directive (incompatible with rootless)
+#   - all temp paths in /tmp
+#   - listens on unprivileged port 8080
+RUN printf 'pid /tmp/nginx.pid;\n\nevents {\n    worker_connections 256;\n}\n\nhttp {\n    include      /etc/nginx/mime.types;\n    default_type application/octet-stream;\n\n    client_body_temp_path /tmp/client_temp;\n    proxy_temp_path       /tmp/proxy_temp;\n    fastcgi_temp_path     /tmp/fastcgi_temp;\n    uwsgi_temp_path       /tmp/uwsgi_temp;\n    scgi_temp_path        /tmp/scgi_temp;\n\n    server {\n        listen 8080;\n        root   /usr/share/nginx/html;\n        index  index.html;\n        location / { try_files $uri $uri/ =404; }\n        add_header X-Content-Type-Options nosniff;\n    }\n}\n' > /etc/nginx/nginx.conf
+
+USER 101
+EXPOSE 8080

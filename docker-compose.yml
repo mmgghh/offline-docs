@@ -1,0 +1,34 @@
+# docker-compose.yml — offline documentation stack
+#
+# Usage:  docker compose up --build -d
+# Browse: http://localhost:8080/
+
+name: offline-docs
+
+services:
+
+  docs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: offline-docs/docs:latest
+    pull_policy: never
+    ports:
+      - "8080:8080"
+    tmpfs:
+      - /tmp
+    depends_on:
+      - go-doc
+    restart: unless-stopped
+
+  go-doc:
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+    image: offline-docs/go:latest
+    pull_policy: never
+    restart: unless-stopped
+
+networks:
+  default:
+    driver: bridge

@@ -1,0 +1,28 @@
+FROM debian:bookworm-slim AS fetcher
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && \
+    pkg=$(apt-cache search '^postgresql-doc-' \
+            | awk '{print $1}' | sort -V | tail -1) && \
+    [ -n "$pkg" ] || pkg=postgresql-doc-15 && \
+    echo "Downloading: $pkg" && \
+    apt-get download "$pkg" && \
+    dpkg -x ${pkg}_*.deb /tmp/pkg && \
+    html=$(find /tmp/pkg -name "index.html" -printf '%h\n' | head -1) && \
+    [ -n "$html" ] || { echo "ERROR: no index.html found"; find /tmp/pkg | head -40; exit 1; } && \
+    echo "Found HTML at: $html" && \
+    cp -r "$html" /docs
+
+FROM nginx:alpine
+
+COPY --from=fetcher /docs/ /usr/share/nginx/html/
+
+# Write a complete nginx.conf from scratch:
+#   - pid in /tmp (always writable, already a tmpfs mount)
+#   - no "user" directive (incompatible with rootless)
+#   - all temp paths in /tmp
+#   - listens on unprivileged port 8080
+RUN printf 'pid /tmp/nginx.pid;\n\nevents {\n    worker_connections 256;\n}\n\nhttp {\n    include      /etc/nginx/mime.types;\n    default_type application/octet-stream;\n\n    client_body_temp_path /tmp/client_temp;\n    proxy_temp_path       /tmp/proxy_temp;\n    fastcgi_temp_path     /tmp/fastcgi_temp;\n    uwsgi_temp_path       /tmp/uwsgi_temp;\n    scgi_temp_path        /tmp/scgi_temp;\n\n    server {\n        listen 8080;\n        root   /usr/share/nginx/html;\n        index  index.html;\n        location / { try_files $uri $uri/ =404; }\n        add_header X-Content-Type-Options nosniff;\n    }\n}\n' > /etc/nginx/nginx.conf
+
+USER 101
+EXPOSE 8080
